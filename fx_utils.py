@@ -6,22 +6,12 @@ Created on Tue Sep 17 13:21:39 2024
 """
 
 from torchvision.models import mobilenet_v2, MobileNet_V2_Weights
-# from model_compression_toolkit.core.pytorch.pytorch_device_config import get_working_device
-# from typing import Iterator, Tuple, List
-# from torch.utils.data import DataLoader
 import torch
 import copy
-
-from torchvision import transforms
-# from torchvision.datasets import ImageFolder
-import os
-import random
-from PIL import Image
-import numpy as np
 from torch.fx import symbolic_trace
-
+from imagenet_representative_dataset import get_representative_dataset
         
-    
+
 class my_Fx:
     def __init__(self, model):
         self.model = model
@@ -115,110 +105,22 @@ class my_Fx:
         return m(*args)
 
 
-
-model = mobilenet_v2(weights=MobileNet_V2_Weights.DEFAULT)
-model.eval()
-
-# Define transformations for the validation set
-val_transform = transforms.Compose([
-    transforms.Resize(256),
-    transforms.CenterCrop(224),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
-
-src_dir = 'C:/GIT/CIFAR10/val_data'
-L = os.listdir(src_dir)
-
-# Define representative dataset generator
-def get_representative_dataset(src_dir, image_file_list, val_transform):
-
-    def representative_dataset():
-        file_order = image_file_list.copy()
-        random.shuffle(file_order)
-        for fname in file_order:
-            image = Image.open(f'{src_dir}/{fname}').convert('RGB')
-            image = val_transform(image)
-            yield image.clone()
-            
-    return representative_dataset
-
-# Get representative dataset generator
-representative_dataset_gen = get_representative_dataset(src_dir, L, val_transform)
-
-image = next(representative_dataset_gen())
-
-my_fx = my_Fx(model)
-
-tensor_dict = my_fx.forward(image)
-
-ref_out = my_fx.fx_model(image.clone().unsqueeze(0))
-assert (tensor_dict['output'] == ref_out).all().item()
-
-ref_out = model(image.clone().unsqueeze(0))
-assert (tensor_dict['output'] == ref_out).all().item()
-
-
-
-std = np.sqrt((image*image).mean().item())
-
-noise1 = torch.randn(image.shape)*std/256
-tensor_dict_with_noise1 = my_fx.forward(image+noise1)
-
-noise2 = torch.randn(image.shape)*std/64
-tensor_dict_with_noise2 = my_fx.forward(image+noise2)
-
-noise3 = torch.randn(image.shape)*std/8
-tensor_dict_with_noise3 = my_fx.forward(image+noise3)
-
-tensor_dict['output-softmax'] = torch.nn.functional.softmax(tensor_dict['output'], dim=1)
-tensor_dict_with_noise1['output-softmax'] = torch.nn.functional.softmax(tensor_dict_with_noise1['output'], dim=1)
-tensor_dict_with_noise2['output-softmax'] = torch.nn.functional.softmax(tensor_dict_with_noise2['output'], dim=1)
-tensor_dict_with_noise3['output-softmax'] = torch.nn.functional.softmax(tensor_dict_with_noise3['output'], dim=1)
-
-# m=my_fx.mods_fx['features.8.conv.0.0']
-
-
-
-
-
-for compute_node in my_fx.compute_order:
-    nominal = tensor_dict[compute_node]
-    e = (nominal-tensor_dict_with_noise1[compute_node])
-    err1 = 1.0/np.sqrt( (e*e).mean().item() / (nominal*nominal).mean().item() )
-    e = (nominal-tensor_dict_with_noise2[compute_node])
-    err2 = 1.0/np.sqrt( (e*e).mean().item() / (nominal*nominal).mean().item() )
-
-    e = (nominal-tensor_dict_with_noise3[compute_node])
-    err3 = 1.0/np.sqrt( (e*e).mean().item() / (nominal*nominal).mean().item() )
+if __name__ == "__main__":
+    model = mobilenet_v2(weights=MobileNet_V2_Weights.DEFAULT)
+    model.eval()
     
-    op = my_fx.nodes[compute_node]
-    if op.op == 'call_module':
-        s = my_fx.mods_fx[op.target]
-    else:
-        s = ''
-     
-    # print(compute_node + ' '*(50-len(compute_node)), round(err1), round(err2), round(err1/err2*100))
-    print(f'{compute_node:30}: {round(err1):4} {round(err2):4} {round(err3):4}  {round(err1/err2*100)/100:4}', s)
-
-
-print(tensor_dict['output-softmax'].max(), tensor_dict['output-softmax'].argmax())
-print(tensor_dict_with_noise1['output-softmax'].max(), tensor_dict_with_noise1['output-softmax'].argmax())
-print(tensor_dict_with_noise2['output-softmax'].max(), tensor_dict_with_noise2['output-softmax'].argmax())
-print(tensor_dict_with_noise3['output-softmax'].max(), tensor_dict_with_noise3['output-softmax'].argmax())
-
-
-
-for _ in range(100):
-    n0 = np.random.randn(1000)-3
-    n  = np.random.randn(1000)*0.01
+    # Get representative dataset generator
+    representative_dataset_gen = get_representative_dataset('C:/GIT/CIFAR10/val_data')
     
-    n1 = n0.copy()
-    n1[n0 < 0] = 0
+    image = next(representative_dataset_gen())
     
-    n2 = (n0+n).copy()
-    n2[n2 < 0] = 0
+    my_fx = my_Fx(model)
     
-    n1 = n1-n1.mean()
-    n2 = n2-n2.mean()
+    tensor_dict = my_fx.forward(image)
     
-    print(np.sqrt(((n1)*(n1)).mean())/np.sqrt(((n1-n2)*(n1-n2)).mean()))
+    ref_out = my_fx.fx_model(image.clone().unsqueeze(0))
+    assert (tensor_dict['output'] == ref_out).all().item()
+    
+    ref_out = model(image.clone().unsqueeze(0))
+    assert (tensor_dict['output'] == ref_out).all().item()
+    
