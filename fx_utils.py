@@ -22,7 +22,6 @@ class my_Fx:
         self.model = model
         self.fx_model= symbolic_trace(model)
         self.mods_fx = {k:m for k,m in self.fx_model.named_modules() }        
-        self.fx_model.eval()
         
         # High-level intermediate representation (IR) - Graph representation
         self.graph = copy.deepcopy(self.fx_model.graph)
@@ -38,6 +37,37 @@ class my_Fx:
             
         self.compute_input_output_dict()
         self.gen_compute_schdule()
+
+
+
+
+    def read_arg_by_ref(self, a, tensor_dict):
+
+        arg_name = None
+        arg = None
+        if type(a) == torch.fx.node.Node:
+            if a.op == 'get_attr':
+                if a.target in self.buffers.keys():
+                    aa = self.buffers[a.target].clone()
+                    arg_name = f'Buffer: {a.target}'
+                elif a.target in self.parameters.keys():
+                    aa = self.parameters[a.target].clone()
+                    arg_name = f'Parameter: {a.target}'
+                else:
+                    assert False, f'unknown input {a.target}'
+            else:
+                aa = tensor_dict[a.name]
+                arg_name = f'Tensor: {a.name}'
+                if type(aa) == np.ndarray:
+                    aa = torch.Tensor(aa.copy())
+                
+            arg = aa
+        else:
+            arg_name = f'Type: {a}'
+            arg = a
+            
+        return arg, arg_name
+
         
     def compute_input_output_dict(self):
         self.nodes_inputs = dict()
@@ -106,28 +136,17 @@ class my_Fx:
                 use_args = []
                 arg_names = []
                 for a in op.args:
-                    if type(a) == torch.fx.node.Node:
-                        if a.op == 'get_attr':
-                            if a.target in self.buffers.keys():
-                                aa = self.buffers[a.target].clone()
-                                arg_names.append(f'Buffer: {a.target}')
-                            elif a.target in self.parameters.keys():
-                                aa = self.parameters[a.target].clone()
-                                arg_names.append(f'Parameter: {a.target}')
-                            else:
-                                assert False, f'unknown input {a.target}'
-                        else:
-                            aa = tensor_dict[a.name]
-                            arg_names.append(f'Tensor: {a.name}')
-                            if type(aa) == np.ndarray:
-                                aa = torch.Tensor(aa.copy())
-                            
-                        use_args.append(aa)
-                    else:
-                        arg_names.append(f'Type: {a}')
-                        use_args.append(a)
+                    arg, arg_name = self.read_arg_by_ref(a, tensor_dict)
+                    use_args.append(arg)
+                    arg_names.append(arg_name)
+                    
+                kwargs = dict()
+                for k,a in op.kwargs.items():
+                    arg, arg_name = self.read_arg_by_ref(a, tensor_dict)
+                    kwargs[k] = arg
+                    
 
-                res = self.fx_apply(m, op.op, *use_args)
+                res = self.fx_apply(m, op.op, use_args, kwargs)
                 assert op.name not in tensor_dict.keys()
                 if type(res) in [int, bool, type(None)]:
                     if res is not None:
@@ -160,14 +179,14 @@ class my_Fx:
 
 
 
-    def fx_apply(self, m, op, *args):
+    def fx_apply(self, m, op, args, kwargs):
         
         if op == 'call_method':
             f = getattr(args[0],m)
-            if m == 'mean':
-                kwargs = {'keepdim' : True}
-            else:
-                kwargs = dict()
+            # if m == 'mean':
+                # kwargs = {'keepdim' : True}
+            # else:
+                # kwargs = dict()
             return f(*args[1:], **kwargs)
         
         if type(m) == torch.nn.modules.batchnorm.BatchNorm2d:
@@ -177,7 +196,7 @@ class my_Fx:
             if len(args[0].shape) == 3:
                 return m(args[0].unsqueeze(0), *args[1:])            
         # print('fx_apply', m)
-        res = m(*args)
+        res = m(*args, **kwargs)
         # if type(res) == torch.Tensor:
         #     print('res out shape', res.shape)
         return res
@@ -201,4 +220,88 @@ if __name__ == "__main__":
     
     ref_out = model(image.clone().unsqueeze(0))
     assert (tensor_dict['output'] == ref_out).all().item()
+    
+    
+    
+    
+    
+
+
+
+
+def find_tensor_in_dict(t, d):
+    assert type(t) == torch.Tensor
+    for k,tt in d.items():
+        if type(tt) in [torch.Tensor, np.ndarray]:
+            if t.shape == tt.shape:
+                if (t == tt).all().item():
+                    return k
+
+def pre_hook(model, inp, T):
+    
+    # if type(model) in [torch.nn.modules.container.Sequential, torch.nn.modules.dropout.Dropout]:
+        # return
+    # if type(model) in [torch.nn.modules.container.Sequential]:
+        # return
+    for ii in inp:
+        print(find_tensor_in_dict(ii, T))
+    return
+    kk = None
+    for k,m in mods.items():
+        if model == m:
+            kk = k
+    if kk is None:
+        assert False
+        return
+
+    inp_tensors = []
+    if type(inp) == tuple:
+        for ii in inp:
+            if type(ii) == torch.fx.proxy.Proxy:
+                return                
+            assert type(ii) == torch.Tensor
+            inp_name = find_tensor_in_dict(ii, tensors_dict)
+            if inp_name is None:
+                print("hhh")
+            inp_tensors.append(inp_name)
+    else:
+        if type(inp) == torch.fx.proxy.Proxy:
+            return                
+        assert type(inp) == torch.Tensor
+        inp_tensors.append(find_tensor_in_dict(inp, tensors_dict))
+    
+    op_list.append((kk, inp_tensors))
+
+def hook(model, inp, out, T):
+
+    # if type(model) in [torch.nn.modules.container.Sequential]:
+        # return
+    # if hasattr(model, 'inplace'):
+        # print(out.shape)
+        # print("in place")
+    # if type(model) in [torch.nn.modules.container.Sequential, torch.nn.modules.dropout.Dropout]:
+    #     return
+    print(find_tensor_in_dict(out, T))
+    
+    return
+    kk = None
+    for k,m in mods.items():
+        if model == m:
+            kk = k
+    if kk is None:
+        assert False
+        return
+
+    if type(out) == tuple:
+        for ix,ii in enumerate(out):
+            if type(ii) == torch.fx.proxy.Proxy:
+                return                
+            assert type(ii) == torch.Tensor
+            tensors_dict[(kk,ix)] = ii.clone()
+    else:
+        if type(out) == torch.fx.proxy.Proxy:
+            return                
+        assert type(out) == torch.Tensor
+        tensors_dict[(kk,0)] = out.clone()
+            
     

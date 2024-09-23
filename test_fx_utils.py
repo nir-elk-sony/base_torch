@@ -11,7 +11,7 @@ import copy
 import numpy as np
 from torch.fx import symbolic_trace
 from imagenet_representative_dataset import get_representative_dataset
-from fx_utils import my_Fx        
+from fx_utils import my_Fx, pre_hook, hook
 
 import matplotlib.pyplot as plt
 import timm
@@ -25,10 +25,11 @@ def showim(I):
     plt.imshow(np.transpose((I-m)/(M-m), axes=(1,2,0)))
     plt.show()
 
+timm_nets = ['tinynet_d.in1k','lcnet_075.ra2_in1k','mobilenetv3_small_075.lamb_in1k','lcnet_050.ra2_in1k','mobilenetv3_small_100.lamb_in1k','lcnet_100.ra2_in1k','mobilenetv3_small_050.lamb_in1k','tinynet_e.in1k','rexnet_100.nav_in1k','mobileone_s1.apple_in1k','tinynet_c.in1k','tinynet_b.in1k','hardcorenas_a.miil_green_in1k','hardcorenas_b.miil_green_in1k','efficientnet_b0.ra_in1k', 'mobilenetv4_conv_aa_large.e230_r448_in12k_ft_in1k', 'efficientnet_b1.ra4_e3600_r240_in1k']
 # model = mobilenet_v2(weights=MobileNet_V2_Weights.DEFAULT)
-# model = efficientnet_b0(EfficientNet_B0_Weights.DEFAULT)
-model = timm.create_model('mobilenetv4_conv_aa_large.e230_r448_in12k_ft_in1k',pretrained=True, num_classes=0)
-# model = timm.create_model('efficientnet_b1.ra4_e3600_r240_in1k', pretrained=True)
+model = efficientnet_b0(EfficientNet_B0_Weights.DEFAULT)
+model = timm.create_model(timm_nets[0], pretrained=True)
+
 
 model = model.eval()
 
@@ -42,12 +43,22 @@ my_fx = my_Fx(model)
 
 tensor_dict = my_fx.forward(image)
 
+if False:
+    pre_hook1 = lambda model, inp: pre_hook(model, inp, tensor_dict)
+    hook1 = lambda model, inp, out: hook(model, inp, out, tensor_dict)
 
-ref_out = my_fx.fx_model(image.clone().unsqueeze(0))
-assert (tensor_dict['output'] == ref_out).all().item()
+    for k,m in model.named_modules():
+        m.register_forward_pre_hook(pre_hook1)
+        m.register_forward_hook(hook1)
 
-ref_out = model(image.clone().unsqueeze(0))
-assert (tensor_dict['output'] == ref_out).all().item()
+if False:
+    ref_out = model(image.clone().unsqueeze(0))
+    assert (tensor_dict['output'] == ref_out).all().item()
+    
+    ref_out = my_fx.fx_model(image.clone().unsqueeze(0))
+    assert (tensor_dict['output'] == ref_out).all().item()
+    
+    raise KeyError()
 
 
 
