@@ -15,7 +15,7 @@ import numpy as np
 def fixed_data(t):
     if type(t) in [ tuple, list]:
         return all([fixed_data(tt) for tt in t])
-    return type(t) in [int, str, bool, float]
+    return type(t) in [int, str, bool, float, slice]
         
 class my_Fx:
     def __init__(self, model):
@@ -62,24 +62,41 @@ class my_Fx:
                     aa = torch.Tensor(aa.copy())
                 
             arg = aa
+        elif type(a) == torch.fx.immutable_collections.immutable_list:
+            arg_name = []
+            arg = []
+            for aa in a:
+                arg1, arg_name1 = self.read_arg_by_ref(aa, tensor_dict)
+                arg_name.append(arg_name1)
+                arg.append(arg1)
+            pass
         else:
             arg_name = f'Type: {a}'
             arg = a
             
         return arg, arg_name
 
+
+
+
+    def collect_tensors(self, L):
+        r = set()        
+        for in_node in L:
+            if type(in_node) == torch.fx.node.Node:
+                r.add(in_node.name)
+            elif type(in_node) == torch.fx.immutable_collections.immutable_list:
+                r = r | self.collect_tensors(in_node)
+            else:
+                if not fixed_data(in_node):
+                    print(in_node, type(in_node))
+                    assert False, 'unknown type'
+        return r
+
         
     def compute_input_output_dict(self):
         self.nodes_inputs = dict()
         for node in self.graph.nodes:
-            self.nodes_inputs[node.name] = set()
-            for in_node in node.args:
-                if type(in_node) == torch.fx.node.Node:
-                    self.nodes_inputs[node.name].add(in_node.name)
-                else:
-                    if not fixed_data(in_node):
-                        print(in_node, type(in_node))
-                        assert False, 'unknown type'
+            self.nodes_inputs[node.name] = self.collect_tensors(node.args)
         
         self.nodes_outputs = dict()
         for k,m in self.nodes_inputs.items():
@@ -127,12 +144,14 @@ class my_Fx:
         
         for op_name in self.compute_order:
             # print("op_name:", op_name)
+                
             op = self.nodes[op_name]
             if op.op in ['call_module', 'call_function', 'call_method']:
                 if op.op == 'call_module':
                     m = self.mods_fx[op.target]
                 else:
                     m = op.target
+                    
                 use_args = []
                 arg_names = []
                 for a in op.args:
