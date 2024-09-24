@@ -15,12 +15,20 @@ import numpy as np
 def fixed_data(t):
     if type(t) in [ tuple, list]:
         return all([fixed_data(tt) for tt in t])
-    return type(t) in [int, str, bool, float, slice]
+    return type(t) in [int, str, bool, float, slice, type(None), torch.Size]
         
 class my_Fx:
     def __init__(self, model):
         self.model = model
-        self.fx_model= symbolic_trace(model)
+        
+        try:
+            self.fx_model= symbolic_trace(model)
+        except:
+            self.fx_model= None
+            
+        if self.fx_model is None:
+            return
+        
         self.mods_fx = {k:m for k,m in self.fx_model.named_modules() }        
         
         # High-level intermediate representation (IR) - Graph representation
@@ -37,6 +45,20 @@ class my_Fx:
             
         self.compute_input_output_dict()
         self.gen_compute_schdule()
+
+
+
+    def read_output_by_ref(self, a):
+        if fixed_data(a):
+            return a
+        if type(a) in [tuple, list]:
+            return tuple(self.read_output_by_ref(aa) for aa in a)
+        if type(a) == np.ndarray:
+            return a.copy()
+        if type(a) != torch.Tensor:
+            assert False, f'unexpected output type: {type(a)}'
+        assert type(a) == torch.Tensor
+        return a.detach().numpy()
 
 
 
@@ -62,16 +84,25 @@ class my_Fx:
                     aa = torch.Tensor(aa.copy())
                 
             arg = aa
-        elif type(a) == torch.fx.immutable_collections.immutable_list:
+        elif type(a) in [torch.fx.immutable_collections.immutable_list, tuple, list]:
             arg_name = []
             arg = []
             for aa in a:
                 arg1, arg_name1 = self.read_arg_by_ref(aa, tensor_dict)
                 arg_name.append(arg_name1)
                 arg.append(arg1)
-            pass
+                
+        elif type(a) in [torch.fx.immutable_collections.immutable_dict, dict]:
+
+            arg_name = dict()
+            arg = dict()
+            for k,aa in a.items():
+                arg[k], arg_name[k] = self.read_arg_by_ref(aa, tensor_dict)
         else:
             arg_name = f'Type: {a}'
+            if not fixed_data(a):
+                print(a, type(a))
+            assert fixed_data(a)
             arg = a
             
         return arg, arg_name
@@ -84,7 +115,7 @@ class my_Fx:
         for in_node in L:
             if type(in_node) == torch.fx.node.Node:
                 r.add(in_node.name)
-            elif type(in_node) == torch.fx.immutable_collections.immutable_list:
+            elif type(in_node) in [tuple, torch.fx.immutable_collections.immutable_list]:
                 r = r | self.collect_tensors(in_node)
             else:
                 if not fixed_data(in_node):
@@ -144,6 +175,7 @@ class my_Fx:
         
         for op_name in self.compute_order:
             # print("op_name:", op_name)
+            # print("")
                 
             op = self.nodes[op_name]
             if op.op in ['call_module', 'call_function', 'call_method']:
@@ -152,30 +184,18 @@ class my_Fx:
                 else:
                     m = op.target
                     
-                use_args = []
-                arg_names = []
-                for a in op.args:
-                    arg, arg_name = self.read_arg_by_ref(a, tensor_dict)
-                    use_args.append(arg)
-                    arg_names.append(arg_name)
-                    
-                kwargs = dict()
-                for k,a in op.kwargs.items():
-                    arg, arg_name = self.read_arg_by_ref(a, tensor_dict)
-                    kwargs[k] = arg
-                    
+                use_args, arg_names = self.read_arg_by_ref(op.args, tensor_dict)
+                # if len(op.kwargs):
+                    # print("hhh")
+                kwargs, kwargs_name = self.read_arg_by_ref(op.kwargs, tensor_dict)
 
                 res = self.fx_apply(m, op.op, use_args, kwargs)
                 assert op.name not in tensor_dict.keys()
-                if type(res) in [int, bool, type(None)]:
-                    if res is not None:
-                        tensor_dict[op.name] = res
-                else:
-                    if type(res) != torch.Tensor:
-                        print("hh")
-                    assert type(res) == torch.Tensor
-                    tensor_dict[op.name] = res.detach().numpy()
-                    
+
+                res = self.read_output_by_ref(res)
+                if res is not None:
+                    tensor_dict[op.name] = res
+
             elif op.op == 'output':
                 assert len(op.args) == 1
                 tensor_dict[op.name] = tensor_dict[op.args[0].name].copy()
