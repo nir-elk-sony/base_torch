@@ -4,6 +4,60 @@ Created on Tue Sep 17 13:21:39 2024
 
 @author: 7000028246
 """
+import datasets 
+from torchvision.models import mobilenet_v2, MobileNet_V2_Weights
+from torchvision.models import resnet50, ResNet50_Weights
+
+from imagenet_representative_dataset import val_transform
+import torch
+
+
+ds = datasets.load_from_disk('C:/huggingface_datasets/imageNet-1k')
+
+ds['train'][0]['image']
+
+
+ds.column_names
+
+I = ds['train'].info
+
+
+label_names = I.features['label'].names
+
+model = mobilenet_v2(weights=MobileNet_V2_Weights.DEFAULT)
+model = resnet50(weights=ResNet50_Weights.IMAGENET1K_V2)
+model.eval()
+
+data_iter = ds['validation'].shuffle(seed=1).select(list(range(1000)))
+# data_iter = ds['validation']
+
+acc = 0
+acc_n = 0
+for x in data_iter:
+    r = model(val_transform(x['image'].convert('RGB')).unsqueeze(0))
+    sm = torch.nn.functional.softmax(r, dim=1)
+    y = sm.argmax()
+    acc += (x['label'] == y.item())
+    acc_n += 1
+    print(acc_n/len(data_iter))
+    
+    # print(sm.max(), x['label'], y.item())
+    
+    
+x = data_iter[4]        
+label_names[x['label']]
+
+
+raise KeyError()
+
+
+
+dataset.save_to_disk("C:/local_dataset")
+
+
+dataset = load_dataset('ILSVRC/imagenet-1k', trust_remote_code=True)
+
+
 
 from torchvision.models import mobilenet_v2, MobileNet_V2_Weights, efficientnet_b0, EfficientNet_B0_Weights
 import torch

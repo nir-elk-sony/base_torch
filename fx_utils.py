@@ -8,7 +8,9 @@ Created on Tue Sep 17 13:21:39 2024
 from torchvision.models import mobilenet_v2, MobileNet_V2_Weights
 import torch
 import copy
-from torch.fx import symbolic_trace
+# from torch.fx import symbolic_trace, GraphModule
+import torch.fx as fx
+
 from imagenet_representative_dataset import get_representative_dataset
 import numpy as np
 
@@ -17,12 +19,29 @@ def fixed_data(t):
         return all([fixed_data(tt) for tt in t])
     return type(t) in [int, str, bool, float, slice, type(None), torch.Size]
         
+
+
+# Todo: gen pointer from module to the parent module
+
+
 class my_Fx:
+    
     def __init__(self, model):
+        self.do_init_from_model(model)
+        
+
+    def get_updated_model(self):
+        return fx.GraphModule(self.fx_model, self.fx_model.graph)  
+        
+    def update_changes(self):        
+        self.do_init_from_model(self.get_updated_model())
+                
+    def do_init_from_model(self, model):
+        
         self.model = model
         
         try:
-            self.fx_model= symbolic_trace(model)
+            self.fx_model= fx.symbolic_trace(model)
         except:
             self.fx_model= None
             
@@ -32,7 +51,8 @@ class my_Fx:
         self.mods_fx = {k:m for k,m in self.fx_model.named_modules() }        
         
         # High-level intermediate representation (IR) - Graph representation
-        self.graph = copy.deepcopy(self.fx_model.graph)
+        # self.graph = copy.deepcopy(self.fx_model.graph)
+        self.graph = self.fx_model.graph
         
         self.nodes = {node.name:node for node in self.graph.nodes}
         self.inputs = {k:m for k,m in self.nodes.items() if m.op == 'placeholder'}
@@ -45,7 +65,83 @@ class my_Fx:
             
         self.compute_input_output_dict()
         self.gen_compute_schdule()
+        
+        
+        self.calc_module = {n:m for n,m in self.fx_model.named_modules() if type(m) != torch.nn.modules.module.Module}
+        
+        self.module_by_calc = dict()
+        self.parent_by_name = dict()
+        
+        self.update_module_by_calc_dict(self.fx_model, '')
+        # print(self.module_by_calc)
+        
+    def update_module_by_calc_dict(self, mod, name):
+        
+        # print('*'*50)
+        # print(mod.__repr__)
+        # print(name)
+        # print('*'*50)
+        self.module_by_calc[name] = mod
+        for n,m in mod.named_children():
+            next_name = f'{name}.{n}' if len(name) > 0 else n
+            self.parent_by_name[next_name] = name
+            if hasattr(m, 'named_children'):
+                self.update_module_by_calc_dict(m,next_name)
+            else:
+                self.module_by_calc[next_name] = m
+        
+        
+        
 
+    def get_module_and_parent_by_name(self, name):
+        name1 = self.graph_names_2_module_names[name]
+        m = self.module_by_calc[name1]
+        p = self.module_by_calc[self.parent_by_name[name1]]
+        return m,p
+    
+
+
+
+
+
+
+
+    def wrap_module(self, name, new_module):                
+                                            
+        mm,pp = self.get_module_and_parent_by_name(name)    
+        child_name = [n for n,mmm in pp.named_children() if mmm == mm ]
+        assert len(child_name) == 1
+        setattr(pp, child_name[0], new_module)
+
+
+    def matched_pattern(self, node, pattern):
+        assert len(pattern) > 0
+        next_nodes = self.get_output_nodes(node.name)
+        m = self.get_node_operation(node)
+                
+        if type(m) in pattern[0] and len(next_nodes) == 1:
+            
+            if len(pattern) == 1:
+                return [node.name],[m]
+            else:
+                res = self.matched_pattern(next_nodes[0], pattern[1:])
+                if res is not None:
+                    return [node.name]+res[0], [m]+res[1]
+                else:
+                    return [node.name],[m]
+                        
+    def iter_nodes(self, node_types):
+        for name,node in self.nodes.items():
+            m = self.get_node_operation(node)
+            if type(m) in node_types:
+                yield name,m
+                
+    def iter_pattern(self, pattern):
+        
+        for name,node in self.nodes.items():
+            res = self.matched_pattern(node, pattern)
+            if res is not None:
+                yield res
 
 
     def read_output_by_ref(self, a):
@@ -59,6 +155,12 @@ class my_Fx:
             assert False, f'unexpected output type: {type(a)}'
         assert type(a) == torch.Tensor
         return a.detach().numpy()
+
+
+
+
+
+
 
 
 
@@ -126,8 +228,14 @@ class my_Fx:
         
     def compute_input_output_dict(self):
         self.nodes_inputs = dict()
+        self.graph_names_2_module_names = dict()
+        
         for node in self.graph.nodes:
             self.nodes_inputs[node.name] = self.collect_tensors(node.args)
+            if node.op == 'call_module':
+                self.graph_names_2_module_names[node.name] = node.target
+                
+            
         
         self.nodes_outputs = dict()
         for k,m in self.nodes_inputs.items():
@@ -158,6 +266,16 @@ class my_Fx:
                     if len(nn) == 0:
                         new_valid_calc_nodes.append(o)
             valid_calc_nodes = new_valid_calc_nodes             
+
+
+    def get_node_operation(self, node):
+        if node.op == 'call_module':        
+            return self.mods_fx.get(node.target)
+        
+        if node.op == 'call_function':
+            return node.target
+
+
 
     def forward(self, *inp):
                 
@@ -216,7 +334,9 @@ class my_Fx:
             s = ''
         return s
 
-
+    def get_output_nodes(self, node_name):
+        
+        return [ self.nodes[mm] for mm in self.nodes_outputs.get(node_name, []) ]
 
     def fx_apply(self, m, op, args, kwargs):
         

@@ -71,7 +71,7 @@ class QuantizedWrapper(nn.Module):
             raise Exception(f"Unknown Operations Type{type(in_op)}")
 
         # Module
-        self.add_module("op", in_op)
+        self.add_module("weight_op", in_op)
         self.name = name
 
         # Quantization
@@ -84,9 +84,9 @@ class QuantizedWrapper(nn.Module):
         self.per_image_h_info = dict()
         
         
-        in_w = self.op.weight.detach().numpy()                
+        in_w = self.weight_op.weight.detach().numpy()                
         
-        print(in_w.shape)
+        # print(in_w.shape)
         if isinstance(in_op, nn.Conv2d): 
             assert len(in_w.shape) == 4
         else:
@@ -94,7 +94,7 @@ class QuantizedWrapper(nn.Module):
             assert len(in_w.shape) == 2
 
     def forward(self, x):
-        return self.op(x)
+        return self.weight_op(x)
     
     def finalize_derivative(self, image_ix = None):
         assert self.image_cnt > 0

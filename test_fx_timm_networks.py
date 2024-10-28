@@ -27,7 +27,7 @@ def showim(I):
     plt.show()
 
 # Get representative dataset generator
-representative_dataset_gen = get_representative_dataset('C:/GIT/CIFAR10/val_data')
+representative_dataset_gen = get_representative_dataset('C:/GIT/val_data_imagenet')
 
 
 image = next(representative_dataset_gen())
@@ -37,7 +37,7 @@ timm_nets = ['tinynet_d.in1k','lcnet_075.ra2_in1k','mobilenetv3_small_075.lamb_i
              'tinynet_e.in1k','rexnet_100.nav_in1k','mobileone_s1.apple_in1k','tinynet_c.in1k',
              'tinynet_b.in1k','hardcorenas_a.miil_green_in1k','hardcorenas_b.miil_green_in1k',
              'efficientnet_b0.ra_in1k', 'mobilenetv4_conv_aa_large.e230_r448_in12k_ft_in1k', 
-             'efficientnet_b1.ra4_e3600_r240_in1k']
+             'efficientnet_b1.ra4_e3600_r240_in1k', 'mobilenetv2_100.ra_in1k']
 
 if False:
     avail_pretrained_models = timm.list_models(pretrained=True)
@@ -49,6 +49,7 @@ if False:
     timm_nets = timm_nets[:1]
 
 # not_working = ['rexnet_100.nav_in1k']
+timm_nets = ['mobilenetv2_100.ra_in1k']
 # timm_nets = list(set(timm_nets)-set(not_working))
 # timm_nets = not_working
 
