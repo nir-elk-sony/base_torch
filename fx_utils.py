@@ -15,19 +15,50 @@ from imagenet_representative_dataset import get_representative_dataset
 import numpy as np
 
 def fixed_data(t):
+    assert False
     if type(t) in [ tuple, list]:
         return all([fixed_data(tt) for tt in t])
     return type(t) in [int, str, bool, float, slice, type(None), torch.Size]
         
-
-
 # Todo: gen pointer from module to the parent module
+def op2exe(op, mods_fx):
+    assert False
+    if op.op == 'call_function':
+        return 'func:' + op.target.__name__
+    if op.op == 'call_module':
+        return type(mods_fx[op.target])
+    if op.op == 'call_method':
+        return 'method:' + op.target
+    
 
 
 class my_Fx:
     
     def __init__(self, model):
         self.do_init_from_model(model)
+
+
+    def op2str(self, op):
+        assert False
+        if op.op == 'placeholder':
+            return f'Placeholder\t\t: {op.target}'
+        if op.op == 'call_function':
+            return f'Call function\t: {op.name} = {op.target.__name__}(...)'
+        if op.op == 'call_module':
+            return f'Call module\t\t: {op.name} = {str(self.mods_fx[op.target])}'
+        if op.op == 'call_method':
+            return f'Call method\t\t: {op.name} = {op.args[0].name}.{op.target}(...)'
+        if op.op == 'get_attr':
+            if op.target in self.parameters.keys():
+                return f'Parameter\t\t: {op.name} = self.{op.target}'
+            if op.target in self.buffers.keys():
+                return f'Buffer\t\t\t: {op.name} = self.{op.target}'
+            assert False, f'unknown attr: {op.name} = self.{op.target}'
+        if op.op == 'output':
+            return f'Output\t\t: {op.name} = {op.args[0].name}.{op.target}(...)'
+            
+        print(op, op.op, op.target)
+        assert False
         
 
     def get_updated_model(self):
@@ -63,8 +94,22 @@ class my_Fx:
         with open('fx_model.txt', 'w') as f:
             f.write(self.fx_model.code)
             
-        self.compute_input_output_dict()
-        self.gen_compute_schdule()
+        
+        if False:
+            dd = {k:m for k,m in self.fx_model.named_modules() }
+            for k,m in dd.items():
+                print('*'*40)
+                print(k)
+                print('*'*40)
+                print(m)
+                print()
+                print()
+            
+            
+        self.placeholders = {k for k,m in self.nodes.items() if m.op == 'placeholder'}
+
+        #self.compute_input_output_dict()
+        #self.gen_compute_schdule()
         
         
         self.calc_module = {n:m for n,m in self.fx_model.named_modules() if type(m) != torch.nn.modules.module.Module}
@@ -74,6 +119,54 @@ class my_Fx:
         
         self.update_module_by_calc_dict(self.fx_model, '')
         # print(self.module_by_calc)
+        
+        #self.calc_dungling_nodes()
+        
+        if False:
+            
+            #op_type = { k:v.op for k,v in self.nodes.items() if v.op == 'get_attr'}
+            fixed_nodes = list({ k for k,v in self.nodes.items() if v.op == 'call_function' and v.target.__name__ == 'getattr' and len(v.args) == 2 and v.args[1] == 'shape'})
+            
+            
+            
+            import json
+            op_type = { k:v.op for k,v in self.nodes.items() }
+            
+            op_op = { k:str(op2exe(n, self.mods_fx)) for k,n in self.nodes.items() }
+            
+            with open(f'{type(self.model).__name__}.json', 'w') as f:
+                json.dump({'op_type' : op_type, 
+                           'nodes_outputs' : {k:list(v) for k,v in self.nodes_outputs.items() },
+                           'fixed_nodes' : fixed_nodes,
+                           'op_op': op_op}, f, indent=4)
+            
+            
+            
+            import pydot
+            
+            
+            node_colors = {'output' : 'red', 'get_attr' : 'yellow', 'call_method' : 'gray', 'call_function' : 'coral', 'call_module' : 'azure', 'placeholder' : 'blue'}
+            
+            all_nodes_by_name = set(sum([list(x) for x in self.nodes_outputs.values() ], []))
+            
+        
+            # graph = pydot.Dot("my_graph", graph_type="graph") # , bgcolor="yellow")
+            graph = pydot.Dot("my_graph", graph_type="digraph", bgcolor="white")
+                                                                                           
+            # Add nodes
+            for n in all_nodes_by_name:
+                
+                graph.add_node(pydot.Node(n, label=n, bgcolor=node_colors.get(n, 'white')))
+
+            for s,d in self.nodes_outputs.items():
+                # Add edges
+                for dd in d:
+                    graph.add_edge(pydot.Edge(src=s, dst=dd))
+            # graph.add_edge(pydot.Edge(src="b", dst="c", color="red"))
+            
+            graph.write_png("output.png")
+        
+        
         
     def update_module_by_calc_dict(self, mod, name):
         
@@ -129,7 +222,12 @@ class my_Fx:
                     return [node.name]+res[0], [m]+res[1]
                 else:
                     return [node.name],[m]
-                        
+                  
+    def iter_all_nodes(self):
+        for name,node in self.nodes.items():
+            m = self.get_node_operation(node)
+            yield name,m
+        
     def iter_nodes(self, node_types):
         for name,node in self.nodes.items():
             m = self.get_node_operation(node)
@@ -145,6 +243,8 @@ class my_Fx:
 
 
     def read_output_by_ref(self, a):
+        return a
+    
         if fixed_data(a):
             return a
         if type(a) in [tuple, list]:
@@ -157,40 +257,42 @@ class my_Fx:
         return a.detach().numpy()
 
 
-
-
-
-
-
-
-
-
-    def read_arg_by_ref(self, a, tensor_dict):
+    def read_arg_by_ref(self, a, tensor_dict, reference):
 
         arg_name = None
         arg = None
         if type(a) == torch.fx.node.Node:
             if a.op == 'get_attr':
                 if a.target in self.buffers.keys():
-                    aa = self.buffers[a.target].clone()
+                    aa = self.buffers[a.target] # .clone()
                     arg_name = f'Buffer: {a.target}'
                 elif a.target in self.parameters.keys():
-                    aa = self.parameters[a.target].clone()
+                    aa = self.parameters[a.target] # .clone()
                     arg_name = f'Parameter: {a.target}'
                 else:
                     assert False, f'unknown input {a.target}'
             else:
                 aa = tensor_dict[a.name]
                 arg_name = f'Tensor: {a.name}'
-                if type(aa) == np.ndarray:
-                    aa = torch.Tensor(aa.copy())
+                # r = reference[a.name]
+                
+                # for k,m in reference.items():
+                #     if type(m) == type(aa):
+                #         print(k, m == aa)
+                if False:
+                    if type(aa) == np.ndarray:
+                        # add this since in some calculation the operation with grad produce different result that without grad
+                        if False:
+                            aa = torch.Tensor(aa.copy()).requires_grad_()
+                        else:
+                            aa = torch.Tensor(aa.copy())
                 
             arg = aa
         elif type(a) in [torch.fx.immutable_collections.immutable_list, tuple, list]:
             arg_name = []
             arg = []
             for aa in a:
-                arg1, arg_name1 = self.read_arg_by_ref(aa, tensor_dict)
+                arg1, arg_name1 = self.read_arg_by_ref(aa, tensor_dict, reference)
                 arg_name.append(arg_name1)
                 arg.append(arg1)
                 
@@ -199,7 +301,7 @@ class my_Fx:
             arg_name = dict()
             arg = dict()
             for k,aa in a.items():
-                arg[k], arg_name[k] = self.read_arg_by_ref(aa, tensor_dict)
+                arg[k], arg_name[k] = self.read_arg_by_ref(aa, tensor_dict, reference)
         else:
             arg_name = f'Type: {a}'
             if not fixed_data(a):
@@ -209,7 +311,27 @@ class my_Fx:
             
         return arg, arg_name
 
-
+    
+    def calc_dungling_nodes(self):
+        
+        nodes_outputs = self.nodes_outputs.copy()
+        nodes_inputs = self.nodes_inputs.copy()
+        
+        nodes = list(self.graph.nodes)
+        nodes_dict = { n.name:n for n in self.graph.nodes}
+        
+        
+        
+        dungling_nodes = [ n for n in nodes if n.name not in nodes_outputs.keys() and n.op != 'output' ] + [nodes_dict[k] for k,v in nodes_outputs.items() if len(v) == 0]
+        dungling_nodes = list(set(dungling_nodes))
+        dungling_nodes_set = set([d.name for d in dungling_nodes])
+        
+        for nn in dungling_nodes: 
+            inps = [ nodes_dict[nn] for nn in nodes_inputs[nn.name] ]
+            for inps1 in inps:
+                print(nodes_outputs[inps1.name] & dungling_nodes_set)
+                print()
+                nodes_outputs[inps1.name] = nodes_outputs[inps1.name]-dungling_nodes_set
 
 
     def collect_tensors(self, L):
@@ -277,37 +399,89 @@ class my_Fx:
 
 
 
-    def forward(self, *inp):
+    def forward(self, *inp, **kwargs):
                 
+        reference = kwargs.get('reference')
         tensor_dict = dict()
         for k,m in zip(self.placeholders, inp):
             if type(m) == torch.Tensor:
                 if len(m.shape) == 3:
-                    m = m.unsqueeze(0).detach().numpy()
-                else:
-                    m = m.detach().numpy()
+                    m = m.unsqueeze(0)
+                
+                # m = m.detach().numpy()
             tensor_dict[k] = m
                     
         # tensor_dict = { k:m.detach().numpy() for k,m in zip(self.placeholders, inp) }
         # tensor_dict = { k:m.clone() for k,m in zip(self.placeholders, inp) }
+        self.calc_op_list = []
+        self.calc_op_list1 = []
+
+
+
+
+        # for op in self.graph.nodes:
+        #     op_name = op.name
+            
+        #     print(self.op2str(op))
         
-        for op_name in self.compute_order:
-            # print("op_name:", op_name)
-            # print("")
+        
+        # # for op_name in self.compute_order:
+        # #     # print("op_name:", op_name)
+        # #     # print("")
+        # #     op = self.nodes[op_name]
+            
+        #     if op.op in ['call_module', 'call_function', 'call_method']:
+        #         if op.op == 'call_module':
+        #             m = self.mods_fx[op.target]
+        #         else:
+        #             m = op.target
+        
+        
+        if False:
+            nodes = list(self.graph.nodes)
+            ops = [op2exe(op1, self.mods_fx) for op1 in self.graph.nodes]
+            op_set = set(ops)
+            for ix, op in enumerate(op_set):
+                print('*'*50)
+                print(ix, op)
+
+        for op in self.graph.nodes:
+            op_name = op.name
                 
-            op = self.nodes[op_name]
+                #op_str = self.op2str(op)
+                #self.calc_op_list1.append(op_str)
+            # print(op_str)
+        
+        
+        # for op_name in self.compute_order:
+        #     # print("op_name:", op_name)
+        #     # print("")
+        #     op = self.nodes[op_name]
+            
             if op.op in ['call_module', 'call_function', 'call_method']:
                 if op.op == 'call_module':
                     m = self.mods_fx[op.target]
                 else:
                     m = op.target
                     
-                use_args, arg_names = self.read_arg_by_ref(op.args, tensor_dict)
+                use_args, arg_names = self.read_arg_by_ref(op.args, tensor_dict, reference)
                 # if len(op.kwargs):
                     # print("hhh")
-                kwargs, kwargs_name = self.read_arg_by_ref(op.kwargs, tensor_dict)
+                kwargs, kwargs_name = self.read_arg_by_ref(op.kwargs, tensor_dict, reference)
 
+                self.calc_op_list.append((op_name, str(m), op.kwargs, op.args))
+                # print(op_name)
                 res = self.fx_apply(m, op.op, use_args, kwargs)
+                
+                if False:
+                    ref = reference.get(op.name)
+                    if ref is not None:
+                        if type(res) == torch.Tensor:
+                            b = (reference.get(op.name) == res).all()
+                            print(op.name, b)
+                            if not b:
+                                print('hh')
+                
                 assert op.name not in tensor_dict.keys()
 
                 res = self.read_output_by_ref(res)
@@ -316,7 +490,14 @@ class my_Fx:
 
             elif op.op == 'output':
                 assert len(op.args) == 1
-                tensor_dict[op.name] = tensor_dict[op.args[0].name].copy()
+                tensor_dict[op.name] = tensor_dict[op.args[0].name]
+            elif op.op == 'placeholder':
+                # print(op)
+                assert op.name in tensor_dict.keys()
+            elif op.op == 'get_attr':                
+                pass
+                # print(op)
+                
             else:
                 assert False, f'unknown op: {op.op}'
 

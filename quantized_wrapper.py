@@ -4,7 +4,7 @@ Created on Tue Oct  8 15:46:03 2024
 
 @author: 7000028246
 """
-from torch import nn, autograd
+from torch import nn, autograd, Tensor
 import numpy as np
 from matplotlib import pyplot as plt
 
@@ -62,6 +62,8 @@ def search_weights_threshold(in_w, bits_array, channel_axis = 0):
         err_arr.append(em)
     
     return th_arr, err_arr
+
+
 
 class QuantizedWrapper(nn.Module):
     def __init__(self, in_op, name: str):
@@ -123,7 +125,25 @@ class QuantizedWrapper(nn.Module):
             self.image_ix = image_ix
             self.image_cnt = 1
     
-    
+class RecoderWrapper(nn.Module):
+    def __init__(self, in_op, name, record_dict):
+        super().__init__()
+
+        # Module
+        self.add_module("recorded_op", in_op)
+        self.name = name
+        self.record_dict = record_dict
+
+    def forward(self, x):
+        
+        if type(x) == Tensor:
+            self.record_dict[self.name+'_input'] = x.detach().numpy()
+            
+        y = self.recorded_op(x)
+        if type(y) == Tensor:
+            self.record_dict[self.name] = y.detach().numpy()
+        self.record_dict[self.name] = y
+        return y
     
 class ActivationQuantizedWrapper(nn.Module):
     def __init__(self, in_op, name: str):
